@@ -4,7 +4,7 @@
 
 set -euo pipefail
 
-REPO_URL="${CLAUDE_INIT_REPO:-https://github.com/<owner>/claude-init.git}"
+REPO_URL="${CLAUDE_INIT_REPO:-https://github.com/SamuelSilva2310/claude-init.git}"
 BRANCH="${CLAUDE_INIT_BRANCH:-main}"
 CLAUDE_HOME="${CLAUDE_HOME:-$HOME/.claude}"
 BIN_DIR="$CLAUDE_HOME/bin"

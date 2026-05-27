@@ -22,7 +22,7 @@ See [PLAN.md](PLAN.md) for the full architecture.
 One-liner (until v0.1.0 ships, this pulls `main`):
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/<owner>/claude-init/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/SamuelSilva2310/claude-init/main/install.sh | bash
 ```
 
 Add the CLI to your `PATH`:
@@ -44,7 +44,7 @@ ls ~/.claude/commands/claude-init.md ~/.claude/templates/claude-init/default/CLA
 If you are hacking on this repo, symlink-install from the checkout so edits go live:
 
 ```bash
-git clone https://github.com/<owner>/claude-init.git
+git clone https://github.com/SamuelSilva2310/claude-init.git
 cd claude-init
 ./scripts/dev-install.sh
 ```

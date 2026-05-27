@@ -284,7 +284,7 @@ JSON-aware substitution: for `.json` files, escape values with `jq` or equivalen
 
 1. **Scrub personal data**
    - `KJOO_BQ_SANDBOX` → `ACME_BQ_SANDBOX` in [examples/python/CLAUDE.md:55](examples/python/CLAUDE.md#L55)
-   - `<owner>` / `ssilva` left as TODO comments pending namespace decision
+   - ~~`<owner>` / `ssilva` left as TODO comments pending namespace decision~~ (resolved → SamuelSilva2310)
    - `Samuel Silva` in LICENSE: keep (real copyright holder) unless instructed otherwise
 
 2. **Restructure template install path**
@@ -337,12 +337,12 @@ JSON-aware substitution: for `.json` files, escape values with `jq` or equivalen
 **v0.1.0 — `install.sh`** (current). Fix: pin to release tag, not `main`.
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/<owner>/claude-init/v0.1.0/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/SamuelSilva2310/claude-init/v0.1.0/install.sh | bash
 ```
 
 **v0.2 — Homebrew tap**:
 ```bash
-brew install <owner>/claude-init/claude-init
+brew install SamuelSilva2310/claude-init/claude-init
 ```
 
 **v0.3 — npm**:
@@ -387,11 +387,10 @@ CI added in Phase 4 when stability matters.
 
 ## 12. Open decisions
 
-These need a call before Phase 3:
+Resolved:
+- ~~**GitHub namespace**~~ — `github.com/SamuelSilva2310/claude-init`.
 
-1. **GitHub namespace** — final org/user for `github.com/<x>/claude-init`.
-2. **LICENSE author** — keep `Samuel Silva` or anonymize to `claude-init contributors`.
-3. **npm package name** — `claude-init` (likely squatted) vs `@<owner>/claude-init`.
-4. **Homebrew tap repo name** — `homebrew-claude-init` vs `homebrew-tap` with multiple formulae.
-
-Phase 1 + 2 work can proceed without resolving these.
+Still open before Phase 3 ships:
+1. **LICENSE author** — keep `Samuel Silva` or anonymize to `claude-init contributors`.
+2. **npm package name** — `claude-init` (likely squatted) vs `@samuelsilva2310/claude-init`.
+3. **Homebrew tap repo name** — `homebrew-claude-init` vs `homebrew-tap` with multiple formulae.

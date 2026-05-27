@@ -184,7 +184,7 @@ If `claude-init` is not on PATH, perform the steps the CLI would have run, manua
 8. Report (Step 8).
 
 Suggest the user install the CLI at the end:
-> Install `claude-init` for faster, reproducible scaffolds: `curl -fsSL https://raw.githubusercontent.com/<owner>/claude-init/main/install.sh | bash`
+> Install `claude-init` for faster, reproducible scaffolds: `curl -fsSL https://raw.githubusercontent.com/SamuelSilva2310/claude-init/main/install.sh | bash`
 
 ---
 

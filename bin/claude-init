@@ -704,7 +704,7 @@ _report_done() {
 cmd_upgrade() {
   command -v git >/dev/null 2>&1 || _die "git not found in PATH"
 
-  local repo_url="${CLAUDE_INIT_REPO:-https://github.com/<owner>/claude-init.git}"
+  local repo_url="${CLAUDE_INIT_REPO:-https://github.com/SamuelSilva2310/claude-init.git}"
   local branch="${CLAUDE_INIT_BRANCH:-main}"
 
   local tmp
