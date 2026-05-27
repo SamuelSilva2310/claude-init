@@ -107,13 +107,20 @@ path_setup_run() {
     return 0
   fi
 
-  printf '\n      Add this line to:\n'
+  if [ "$shell_name" = "zsh" ]; then
+    printf '      \033[90m(.zshrc for your terminal, .zshenv for Claude Code Bash)\033[0m\n'
+  fi
+
+  printf '\n      \033[1mRun this to add it:\033[0m\n\n'
+
+  # Trim trailing newline from the export line for inline use.
+  local line="${export_line%$'\n'}"
   local rc
   for rc in "${rc_files[@]}"; do
-    printf '        - %s\n' "$rc"
+    # ~-collapse for display: friendlier than /Users/x/...
+    local pretty="${rc/#$HOME/~}"
+    printf "        \033[36mecho '%s' >> %s\033[0m\n" "$line" "$pretty"
   done
-  if [ "$shell_name" = "zsh" ]; then
-    printf '      (Both — \033[36m.zshrc\033[0m for your terminal, \033[36m.zshenv\033[0m for Claude Code Bash.)\n'
-  fi
-  printf '\n      \033[36m%s\033[0m\n' "$export_line"
+
+  printf '\n      \033[90mOr copy the literal line:\033[0m  \033[36m%s\033[0m\n' "$line"
 }
