@@ -1,0 +1,870 @@
+#!/usr/bin/env bash
+# claude-init — CLI scaffolder for .claude/ directories.
+#
+# Subcommand dispatcher. See `claude-init help` for usage.
+
+set -euo pipefail
+
+VERSION="0.2.0-dev"
+
+CLAUDE_HOME="${CLAUDE_HOME:-$HOME/.claude}"
+SHIPPED_DIR="$CLAUDE_HOME/templates/claude-init"
+USER_DIR="$CLAUDE_HOME/templates/user"
+
+VERBOSE=0
+QUIET=0
+
+REQUIRED_KEYS=(project_name description language framework testing install_cmd dev_cmd build_cmd test_cmd lint_cmd)
+OPTIONAL_KEYS=(deployment rules stack)
+
+# ─── output helpers ─────────────────────────────────────────────────────────
+
+_log()  { [ "$QUIET" -eq 1 ] || printf '  \033[36m%s\033[0m %s\n' "$1" "$2"; }
+_ok()   { [ "$QUIET" -eq 1 ] || printf '  \033[32m%s\033[0m %s\n' "$1" "$2"; }
+_warn() { printf '  \033[33m%s\033[0m %s\n' "WARN" "$1" >&2; }
+_die()  { printf '  \033[31m%s\033[0m %s\n' "ERROR" "$1" >&2; exit 1; }
+_dbg()  { [ "$VERBOSE" -eq 1 ] && printf '  \033[90m%s\033[0m %s\n' "DEBUG" "$1" >&2 || true; }
+
+# ─── help text ──────────────────────────────────────────────────────────────
+
+_usage_main() {
+  cat <<EOF
+claude-init — scaffolder for .claude/ directories
+
+Usage:
+  claude-init <command> [args] [flags]
+
+Commands:
+  init                        Scaffold .claude/ in current project
+  template list               Show all templates with source
+  template path [name]        Print resolved directory for template
+  template edit [name]        Open template in \$EDITOR
+  template fork <src> <dst>   Copy a template into user/ for editing
+  upgrade                     Re-fetch shipped templates + CLI + slash from repo
+  doctor                      Diagnose install state
+  help [command]              Show help (or subcommand help)
+  version                     Print version
+
+Global flags:
+  -h, --help                  Show help
+  -V, --version               Print version
+  -v, --verbose               Verbose output
+  -q, --quiet                 Suppress non-error output
+
+Environment:
+  CLAUDE_HOME                 Override ~/.claude (default: \$HOME/.claude)
+  EDITOR                      Used by 'template edit'
+  CLAUDE_INIT_REPO            Override repo URL for 'upgrade'
+  CLAUDE_INIT_BRANCH          Override branch for 'upgrade' (default: main)
+
+Run 'claude-init help <command>' for details on a subcommand.
+EOF
+}
+
+_usage_template() {
+  cat <<EOF
+claude-init template — manage templates
+
+Usage:
+  claude-init template <subcommand> [args]
+
+Subcommands:
+  list                        List shipped + user templates
+  path [name]                 Print resolved path for template name (default: "default")
+  edit [name]                 Open template in \$EDITOR (default: "default")
+  fork <src> <dst>            Copy template <src> into user/<dst> for editing
+
+Flags (fork):
+  --from-user                 Source is a user template, not a shipped one
+
+Resolution order for [name]:
+  1. \$CLAUDE_HOME/templates/user/<name>/
+  2. \$CLAUDE_HOME/templates/claude-init/<name>/
+EOF
+}
+
+_usage_init() {
+  cat <<EOF
+claude-init init — scaffold .claude/ in current project
+
+Usage:
+  claude-init init [flags]
+
+Flags:
+  --template <name>           Template to use (default: "default")
+  --dry-run                   Print plan, no writes
+  --force                     Overwrite existing .claude/ without prompt
+  --non-interactive           Fail instead of prompting for missing values
+  --from-config <file>        Read answers from JSON (see schema below)
+
+JSON config schema:
+  {
+    "template": "default",
+    "required": {
+      "project_name": "...", "description": "...", "language": "...",
+      "framework": "...", "testing": "...",
+      "install_cmd": "...", "dev_cmd": "...", "build_cmd": "...",
+      "test_cmd": "...", "lint_cmd": "..."
+    },
+    "optional": {
+      "deployment": "...", "rules": "...", "stack": "..."
+    }
+  }
+
+Optional values may be null or empty — their template blocks are stripped.
+EOF
+}
+
+_usage_upgrade() {
+  cat <<EOF
+claude-init upgrade — re-fetch shipped templates + CLI + slash command
+
+Usage:
+  claude-init upgrade
+
+Re-clones the repo and overwrites:
+  $CLAUDE_HOME/bin/claude-init
+  $CLAUDE_HOME/commands/claude-init.md
+  $SHIPPED_DIR/default
+
+User templates ($USER_DIR/) are NEVER touched.
+Existing shipped template is backed up to <path>.bak.<timestamp>.
+EOF
+}
+
+_usage_doctor() {
+  cat <<EOF
+claude-init doctor — diagnose install state
+
+Usage:
+  claude-init doctor
+
+Checks:
+  - CLAUDE_HOME exists
+  - bin/claude-init present and executable
+  - commands/claude-init.md present
+  - shipped default template present + parses
+  - user/ template dir present
+  - PATH contains \$CLAUDE_HOME/bin
+  - required external tools (perl, python3) available
+EOF
+}
+
+# ─── template resolution ────────────────────────────────────────────────────
+
+# _resolve_template <name>
+# Prints resolved path on stdout, or empty + non-zero exit if not found.
+_resolve_template() {
+  local name="${1:-default}"
+  local candidates=(
+    "$USER_DIR/$name"
+    "$SHIPPED_DIR/$name"
+  )
+  for c in "${candidates[@]}"; do
+    if [ -d "$c" ]; then
+      printf '%s\n' "$c"
+      return 0
+    fi
+  done
+  return 1
+}
+
+# _list_templates_dir <dir> <source-label>
+_list_templates_dir() {
+  local dir="$1" label="$2"
+  [ -d "$dir" ] || return 0
+  local entry
+  for entry in "$dir"/*/; do
+    [ -d "$entry" ] || continue
+    local name
+    name="$(basename "$entry")"
+    case "$name" in
+      *.bak.*) continue ;;
+    esac
+    printf '  %-20s  %s  %s\n' "$name" "$label" "$entry"
+  done
+}
+
+# ─── prompting + detection ──────────────────────────────────────────────────
+
+# _prompt <var-name> <question> [default]
+_prompt() {
+  local var_name="$1" question="$2" default="${3:-}"
+  local val
+  if [ -n "$default" ]; then
+    read -rp "  $question [$default]: " val
+    val="${val:-$default}"
+  else
+    read -rp "  $question: " val
+  fi
+  printf -v "$var_name" '%s' "$val"
+  export "${var_name?}"
+}
+
+# _detect_node_pm — echo pnpm|yarn|npm
+_detect_node_pm() {
+  [ -f "pnpm-lock.yaml" ] && echo "pnpm" && return
+  [ -f "yarn.lock" ]      && echo "yarn" && return
+  echo "npm"
+}
+
+# _detect_node_framework — read package.json dependencies, echo a guess or empty
+_detect_node_framework() {
+  [ -f "package.json" ] || return 0
+  command -v python3 >/dev/null 2>&1 || return 0
+  python3 - <<'PY' 2>/dev/null || true
+import json
+try:
+    d = json.load(open("package.json"))
+except Exception:
+    raise SystemExit(0)
+deps = {**d.get("dependencies", {}), **d.get("devDependencies", {})}
+for key, label in [
+    ("next", "Next.js"), ("react", "React"), ("vue", "Vue"),
+    ("svelte", "SvelteKit"), ("fastify", "Fastify"),
+    ("express", "Express"), ("@nestjs/core", "NestJS"), ("hono", "Hono"),
+]:
+    if key in deps:
+        print(label)
+        break
+PY
+}
+
+# _detect_node_test_framework — echo Vitest|Jest|Mocha|... or empty
+_detect_node_test_framework() {
+  [ -f "package.json" ] || return 0
+  command -v python3 >/dev/null 2>&1 || return 0
+  python3 - <<'PY' 2>/dev/null || true
+import json
+try:
+    d = json.load(open("package.json"))
+except Exception:
+    raise SystemExit(0)
+deps = {**d.get("dependencies", {}), **d.get("devDependencies", {})}
+for key, label in [
+    ("vitest", "Vitest"), ("jest", "Jest"),
+    ("mocha", "Mocha"), ("playwright", "Playwright"),
+]:
+    if key in deps:
+        print(label)
+        break
+PY
+}
+
+# _detect_and_set_defaults
+# Populates GUESS_* variables with detected defaults. Empty when unknown.
+_detect_and_set_defaults() {
+  GUESS_language=""
+  GUESS_framework=""
+  GUESS_testing=""
+  GUESS_install=""
+  GUESS_dev=""
+  GUESS_build=""
+  GUESS_test=""
+  GUESS_lint=""
+
+  if [ -f "package.json" ]; then
+    [ -f "tsconfig.json" ] && GUESS_language="TypeScript" || GUESS_language="JavaScript"
+    local pm
+    pm="$(_detect_node_pm)"
+    GUESS_install="$pm install"
+    GUESS_dev="$pm run dev"
+    GUESS_build="$pm run build"
+    GUESS_test="$pm test"
+    GUESS_lint="$pm run lint"
+    GUESS_framework="$(_detect_node_framework)"
+    GUESS_testing="$(_detect_node_test_framework)"
+  elif [ -f "pyproject.toml" ] || [ -f "setup.py" ]; then
+    GUESS_language="Python"
+    if [ -f "uv.lock" ]; then
+      GUESS_install="uv sync"
+      GUESS_test="uv run pytest"
+      GUESS_lint="uv run ruff check ."
+      GUESS_build="uv build"
+      GUESS_dev="uv run python -m app"
+    elif [ -f "poetry.lock" ]; then
+      GUESS_install="poetry install"
+      GUESS_test="poetry run pytest"
+      GUESS_lint="poetry run ruff check ."
+      GUESS_build="poetry build"
+      GUESS_dev="poetry run python -m app"
+    else
+      GUESS_install="pip install -e ."
+      GUESS_test="pytest"
+      GUESS_lint="ruff check ."
+      GUESS_build="python -m build"
+      GUESS_dev="python -m app"
+    fi
+    GUESS_testing="pytest"
+  elif [ -f "go.mod" ]; then
+    GUESS_language="Go"
+    GUESS_install="go mod download"
+    GUESS_dev="go run ./..."
+    GUESS_build="go build ./..."
+    GUESS_test="go test ./..."
+    GUESS_lint="golangci-lint run"
+    GUESS_testing="go test"
+  elif [ -f "Cargo.toml" ]; then
+    GUESS_language="Rust"
+    GUESS_install="cargo fetch"
+    GUESS_dev="cargo run"
+    GUESS_build="cargo build --release"
+    GUESS_test="cargo test"
+    GUESS_lint="cargo clippy"
+    GUESS_testing="cargo test"
+  fi
+}
+
+# _gather_interactive
+# Prompts for all required + optional values, exports them as CI_*.
+_gather_interactive() {
+  _detect_and_set_defaults
+
+  local default_name
+  default_name="$(basename "$PWD")"
+
+  printf '\nclaude-init: configuring .claude/ for %s\n\n' "$default_name"
+
+  _prompt CI_project_name "Project name"             "$default_name"
+  _prompt CI_description  "Description (one line)"   ""
+  _prompt CI_language     "Language"                 "$GUESS_language"
+  _prompt CI_framework    "Framework"                "$GUESS_framework"
+  _prompt CI_testing      "Testing framework"        "$GUESS_testing"
+  _prompt CI_install_cmd  "Install command"          "$GUESS_install"
+  _prompt CI_dev_cmd      "Dev command"              "$GUESS_dev"
+  _prompt CI_build_cmd    "Build command"            "$GUESS_build"
+  _prompt CI_test_cmd     "Test command"             "$GUESS_test"
+  _prompt CI_lint_cmd     "Lint command"             "$GUESS_lint"
+  _prompt CI_deployment   "Deployment (optional)"    ""
+  _prompt CI_rules        "Project rules (optional)" ""
+  CI_stack=""
+  export CI_stack
+  printf '\n'
+}
+
+# _gather_non_interactive
+# Uses detected defaults only. Fails if required values cannot be inferred.
+_gather_non_interactive() {
+  _detect_and_set_defaults
+
+  export CI_project_name="$(basename "$PWD")"
+  export CI_description="$CI_project_name"
+  export CI_language="${GUESS_language:-}"
+  export CI_framework="${GUESS_framework:-unknown}"
+  export CI_testing="${GUESS_testing:-unknown}"
+  export CI_install_cmd="${GUESS_install:-}"
+  export CI_dev_cmd="${GUESS_dev:-}"
+  export CI_build_cmd="${GUESS_build:-}"
+  export CI_test_cmd="${GUESS_test:-}"
+  export CI_lint_cmd="${GUESS_lint:-}"
+  export CI_deployment=""
+  export CI_rules=""
+  export CI_stack=""
+}
+
+# _load_config <file>
+# Reads JSON config and exports values as CI_*.
+_load_config() {
+  local config_file="$1"
+  [ -f "$config_file" ] || _die "config file not found: $config_file"
+  command -v python3 >/dev/null 2>&1 || _die "python3 required for --from-config"
+
+  local exports
+  exports="$(python3 - "$config_file" <<'PY'
+import json, sys, shlex
+d = json.load(open(sys.argv[1]))
+for section in ("required", "optional"):
+    for k, v in (d.get(section) or {}).items():
+        val = "" if v is None else str(v)
+        print(f"export CI_{k}={shlex.quote(val)}")
+PY
+)"
+  eval "$exports"
+}
+
+# _validate_required_set
+# Errors if any required key is unset or empty.
+_validate_required_set() {
+  local missing=()
+  local key
+  for key in "${REQUIRED_KEYS[@]}"; do
+    local varname="CI_$key"
+    local val="${!varname:-}"
+    [ -n "$val" ] || missing+=("$key")
+  done
+  if [ "${#missing[@]}" -gt 0 ]; then
+    _die "missing required values: ${missing[*]}"
+  fi
+}
+
+# ─── substitution + validation ──────────────────────────────────────────────
+
+# _substitute_file <file>
+# In-place substitution: strip/keep optional blocks, replace placeholders.
+_substitute_file() {
+  local file="$1"
+  local keys_required="${REQUIRED_KEYS[*]}"
+  local keys_optional="${OPTIONAL_KEYS[*]}"
+  REQUIRED_KEYS_LIST="$keys_required" \
+  OPTIONAL_KEYS_LIST="$keys_optional" \
+  perl -i -0777 -pe '
+    my @opt = split / /, $ENV{OPTIONAL_KEYS_LIST};
+    my @req = split / /, $ENV{REQUIRED_KEYS_LIST};
+
+    # Optional blocks: keep content (strip markers) if value set, else delete block.
+    for my $opt (@opt) {
+      my $val = $ENV{"CI_$opt"} // "";
+      if ($val ne "") {
+        s/<!-- optional:\Q$opt\E -->\n?(.*?)<!-- \/optional -->\n?/$1/gs;
+      } else {
+        s/<!-- optional:\Q$opt\E -->.*?<!-- \/optional -->\n?//gs;
+      }
+    }
+
+    # Substitute all placeholders (required + optional).
+    for my $key (@req, @opt) {
+      my $val = $ENV{"CI_$key"} // "";
+      s/\Q{{$key}}\E/$val/g;
+    }
+  ' "$file"
+}
+
+# _substitute_all <dir>
+_substitute_all() {
+  local dir="$1"
+  local f
+  while IFS= read -r f; do
+    _dbg "substitute: $f"
+    _substitute_file "$f"
+  done < <(find "$dir" -type f \( \
+      -name '*.md' -o -name '*.json' -o -name '*.yaml' \
+      -o -name '*.yml' -o -name '*.txt' \
+    \))
+}
+
+# _validate_output <dir>
+_validate_output() {
+  local dir="$1"
+  local errors=0
+  local key
+
+  for key in "${REQUIRED_KEYS[@]}"; do
+    if grep -rqlF "{{${key}}}" "$dir" 2>/dev/null; then
+      _warn "unresolved required placeholder: {{${key}}}"
+      grep -rnF "{{${key}}}" "$dir" >&2 || true
+      errors=$((errors + 1))
+    fi
+  done
+
+  if grep -rqF '<!-- optional:' "$dir" 2>/dev/null; then
+    _warn "leftover optional opening markers"
+    grep -rnF '<!-- optional:' "$dir" >&2 || true
+    errors=$((errors + 1))
+  fi
+  if grep -rqF '<!-- /optional -->' "$dir" 2>/dev/null; then
+    _warn "leftover /optional closing markers"
+    grep -rnF '<!-- /optional -->' "$dir" >&2 || true
+    errors=$((errors + 1))
+  fi
+
+  local f
+  while IFS= read -r f; do
+    if command -v python3 >/dev/null 2>&1; then
+      if ! python3 -c "import json, sys; json.load(open(sys.argv[1]))" "$f" 2>/dev/null; then
+        _warn "invalid JSON: $f"
+        errors=$((errors + 1))
+      fi
+    fi
+  done < <(find "$dir" -type f -name '*.json')
+
+  [ "$errors" -eq 0 ] || _die "validation failed with $errors error(s)"
+}
+
+# ─── subcommands ────────────────────────────────────────────────────────────
+
+cmd_version() {
+  printf 'claude-init %s\n' "$VERSION"
+}
+
+cmd_help() {
+  case "${1:-}" in
+    ""|main)       _usage_main ;;
+    template)      _usage_template ;;
+    init)          _usage_init ;;
+    upgrade)       _usage_upgrade ;;
+    doctor)        _usage_doctor ;;
+    help|version)  _usage_main ;;
+    *)             _die "no help topic for: $1" ;;
+  esac
+}
+
+cmd_template() {
+  local sub="${1:-}"
+  shift || true
+  case "$sub" in
+    list)  _template_list "$@" ;;
+    path)  _template_path "$@" ;;
+    edit)  _template_edit "$@" ;;
+    fork)  _template_fork "$@" ;;
+    ""|-h|--help|help) _usage_template ;;
+    *)     _die "unknown template subcommand: $sub (run 'claude-init template --help')" ;;
+  esac
+}
+
+_template_list() {
+  local found=0
+  if [ -d "$SHIPPED_DIR" ] && compgen -G "$SHIPPED_DIR/*/" >/dev/null; then
+    printf 'Shipped templates (\033[36m%s\033[0m):\n' "$SHIPPED_DIR"
+    _list_templates_dir "$SHIPPED_DIR" "shipped"
+    found=1
+  fi
+  if [ -d "$USER_DIR" ] && compgen -G "$USER_DIR/*/" >/dev/null; then
+    [ "$found" -eq 1 ] && printf '\n'
+    printf 'User templates (\033[36m%s\033[0m):\n' "$USER_DIR"
+    _list_templates_dir "$USER_DIR" "user"
+    found=1
+  fi
+  if [ "$found" -eq 0 ]; then
+    _warn "no templates found under $CLAUDE_HOME/templates/"
+    _warn "run install.sh to install the shipped default"
+    return 1
+  fi
+}
+
+_template_path() {
+  local name="${1:-default}"
+  local path
+  if path="$(_resolve_template "$name")"; then
+    printf '%s\n' "$path"
+  else
+    _die "template not found: $name (tried $USER_DIR/$name, $SHIPPED_DIR/$name)"
+  fi
+}
+
+_template_edit() {
+  local name="${1:-default}"
+  local path
+  path="$(_resolve_template "$name")" || _die "template not found: $name"
+  local editor="${EDITOR:-}"
+  if [ -z "$editor" ]; then
+    _die "EDITOR not set. Export EDITOR=vim (or your editor) and retry."
+  fi
+  _log "edit" "$path (with $editor)"
+  exec "$editor" "$path"
+}
+
+_template_fork() {
+  local from_user=0
+  local args=()
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --from-user) from_user=1; shift ;;
+      -h|--help)   _usage_template; return 0 ;;
+      --)          shift; while [ $# -gt 0 ]; do args+=("$1"); shift; done ;;
+      -*)          _die "unknown flag: $1" ;;
+      *)           args+=("$1"); shift ;;
+    esac
+  done
+
+  local src="${args[0]:-}"
+  local dst="${args[1]:-}"
+  [ -n "$src" ] || _die "fork requires <src>: claude-init template fork <src> <dst>"
+  [ -n "$dst" ] || _die "fork requires <dst>: claude-init template fork <src> <dst>"
+
+  local src_dir
+  if [ "$from_user" -eq 1 ]; then
+    src_dir="$USER_DIR/$src"
+  else
+    src_dir="$SHIPPED_DIR/$src"
+  fi
+  [ -d "$src_dir" ] || _die "source template not found: $src_dir"
+
+  local dst_dir="$USER_DIR/$dst"
+  if [ -e "$dst_dir" ]; then
+    _die "destination already exists: $dst_dir"
+  fi
+
+  mkdir -p "$USER_DIR"
+  cp -R "$src_dir" "$dst_dir"
+  _log "fork" "$src_dir -> $dst_dir"
+  _log "next" "edit it:  claude-init template edit $dst"
+}
+
+cmd_init() {
+  local template_name="default"
+  local dry_run=0 force=0 non_interactive=0
+  local from_config=""
+
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --template)         template_name="${2:-}"; shift 2 ;;
+      --dry-run)          dry_run=1; shift ;;
+      --force)            force=1; shift ;;
+      --non-interactive)  non_interactive=1; shift ;;
+      --from-config)      from_config="${2:-}"; shift 2 ;;
+      -h|--help)          _usage_init; return 0 ;;
+      *)                  _die "unknown flag: $1" ;;
+    esac
+  done
+
+  command -v perl >/dev/null 2>&1 || _die "perl required for placeholder substitution"
+
+  local template_dir
+  template_dir="$(_resolve_template "$template_name")" \
+    || _die "template not found: $template_name (run 'claude-init template list')"
+
+  _log "template" "$template_dir"
+
+  # Existing .claude/ handling
+  if [ -e "./.claude" ]; then
+    if [ "$force" -ne 1 ]; then
+      if [ "$non_interactive" -eq 1 ]; then
+        _die "./.claude/ exists. Pass --force to overwrite."
+      fi
+      local reply=""
+      read -rp "  ./.claude/ exists. Overwrite (backup made)? [y/N]: " reply
+      case "$reply" in
+        y|Y|yes|YES) : ;;
+        *) _die "aborted by user" ;;
+      esac
+    fi
+  fi
+
+  # Gather answers
+  if [ -n "$from_config" ]; then
+    _log "config" "loading $from_config"
+    _load_config "$from_config"
+  elif [ "$non_interactive" -eq 1 ]; then
+    _gather_non_interactive
+  else
+    _gather_interactive
+  fi
+
+  _validate_required_set
+
+  # Backup existing
+  if [ -e "./.claude" ]; then
+    local backup="./.claude.bak.$(date +%Y%m%d%H%M%S)"
+    if [ "$dry_run" -eq 1 ]; then
+      _log "dry-run" "would back up ./.claude -> $backup"
+    else
+      mv "./.claude" "$backup"
+      _log "backup" "./.claude -> $backup"
+    fi
+  fi
+
+  # Copy template
+  if [ "$dry_run" -eq 1 ]; then
+    _log "dry-run" "would copy $template_dir -> ./.claude"
+    _log "dry-run" "would substitute placeholders, strip optional blocks, validate"
+    _report_planned_substitutions
+    return 0
+  fi
+
+  cp -R "$template_dir" "./.claude"
+  _log "copy" "$template_dir -> ./.claude"
+
+  _substitute_all "./.claude"
+  _log "substitute" "placeholders applied"
+
+  _validate_output "./.claude"
+  _ok "valid" "all required placeholders resolved, JSON parses, no leftover markers"
+
+  _report_done
+}
+
+_report_planned_substitutions() {
+  printf '\nPlanned substitutions:\n'
+  local key
+  for key in "${REQUIRED_KEYS[@]}"; do
+    local varname="CI_$key"
+    printf '  required  %-15s = %s\n' "$key" "${!varname:-<unset>}"
+  done
+  for key in "${OPTIONAL_KEYS[@]}"; do
+    local varname="CI_$key"
+    local val="${!varname:-}"
+    if [ -n "$val" ]; then
+      printf '  optional  %-15s = %s\n' "$key" "$val"
+    else
+      printf '  optional  %-15s = (skip — block stripped)\n' "$key"
+    fi
+  done
+}
+
+_report_done() {
+  printf '\n\033[32m✓ Scaffolded ./.claude/\033[0m\n\n'
+  printf 'Files:\n'
+  ( cd .claude && find . -type f | sort | sed 's|^\./|  |' )
+  printf '\nNext:\n'
+  printf '  - Review ./.claude/CLAUDE.md and fill the stub sections\n'
+  printf '  - Inside Claude Code: ask AI to populate ## Gotchas, ## Key Files\n'
+  printf '  - Tighten ./.claude/settings.json for your stack\n'
+}
+
+cmd_upgrade() {
+  command -v git >/dev/null 2>&1 || _die "git not found in PATH"
+
+  local repo_url="${CLAUDE_INIT_REPO:-https://github.com/<owner>/claude-init.git}"
+  local branch="${CLAUDE_INIT_BRANCH:-main}"
+
+  local tmp
+  tmp="$(mktemp -d -t claude-init-upgrade.XXXXXX)"
+  # shellcheck disable=SC2064
+  trap "rm -rf '$tmp'" EXIT
+
+  _log "upgrade" "fetching from $repo_url ($branch)"
+  if ! git clone --depth 1 --branch "$branch" "$repo_url" "$tmp/repo" >/dev/null 2>&1; then
+    _die "clone failed: $repo_url"
+  fi
+
+  # Shipped template
+  local dest="$SHIPPED_DIR/default"
+  mkdir -p "$SHIPPED_DIR"
+  if [ -d "$dest" ]; then
+    local backup="$dest.bak.$(date +%Y%m%d%H%M%S)"
+    mv "$dest" "$backup"
+    _log "backup" "$dest -> $backup"
+  fi
+  cp -R "$tmp/repo/templates/default" "$dest"
+  _log "ok" "shipped template updated"
+
+  # Slash command
+  if [ -f "$tmp/repo/commands/claude-init.md" ]; then
+    mkdir -p "$CLAUDE_HOME/commands"
+    cp "$tmp/repo/commands/claude-init.md" "$CLAUDE_HOME/commands/claude-init.md"
+    _log "ok" "slash command updated"
+  fi
+
+  # CLI binary
+  if [ -f "$tmp/repo/bin/claude-init" ]; then
+    mkdir -p "$CLAUDE_HOME/bin"
+    cp "$tmp/repo/bin/claude-init" "$CLAUDE_HOME/bin/claude-init"
+    chmod +x "$CLAUDE_HOME/bin/claude-init"
+    _log "ok" "cli binary updated"
+  fi
+
+  _log "done" "user templates untouched: $USER_DIR"
+}
+
+cmd_doctor() {
+  local ok=1
+
+  _check() {
+    local label="$1" cond="$2" fix="${3:-}"
+    if eval "$cond" 2>/dev/null; then
+      printf '  \033[32m✓\033[0m %s\n' "$label"
+    else
+      printf '  \033[31m✗\033[0m %s\n' "$label"
+      [ -n "$fix" ] && printf '      \033[90mfix:\033[0m %s\n' "$fix"
+      ok=0
+    fi
+  }
+
+  _warn_check() {
+    local label="$1" cond="$2" fix="${3:-}"
+    if eval "$cond" 2>/dev/null; then
+      printf '  \033[32m✓\033[0m %s\n' "$label"
+    else
+      printf '  \033[33m!\033[0m %s\n' "$label"
+      [ -n "$fix" ] && printf '      \033[90mfix:\033[0m %s\n' "$fix"
+    fi
+  }
+
+  printf 'claude-init doctor — %s\n\n' "$CLAUDE_HOME"
+
+  _check "CLAUDE_HOME exists ($CLAUDE_HOME)" \
+         "[ -d '$CLAUDE_HOME' ]" \
+         "mkdir -p '$CLAUDE_HOME'"
+
+  _check "CLI binary present + executable" \
+         "[ -x '$CLAUDE_HOME/bin/claude-init' ]" \
+         "re-run install.sh or ./scripts/dev-install.sh"
+
+  _check "slash command present" \
+         "[ -f '$CLAUDE_HOME/commands/claude-init.md' ]" \
+         "re-run install.sh"
+
+  _check "shipped template dir present" \
+         "[ -d '$SHIPPED_DIR/default' ]" \
+         "claude-init upgrade"
+
+  _check "shipped template has CLAUDE.md" \
+         "[ -f '$SHIPPED_DIR/default/CLAUDE.md' ]" \
+         "claude-init upgrade"
+
+  _check "shipped template has settings.json" \
+         "[ -f '$SHIPPED_DIR/default/settings.json' ]" \
+         "claude-init upgrade"
+
+  if command -v python3 >/dev/null 2>&1; then
+    _check "shipped settings.json parses" \
+           "python3 -c \"import json; json.load(open('$SHIPPED_DIR/default/settings.json'))\"" \
+           "shipped template is corrupt — claude-init upgrade"
+  fi
+
+  _warn_check "user template dir present" \
+              "[ -d '$USER_DIR' ]" \
+              "mkdir -p '$USER_DIR'  # optional, for forks"
+
+  _warn_check "PATH contains $CLAUDE_HOME/bin" \
+              "echo \$PATH | tr ':' '\n' | grep -qx '$CLAUDE_HOME/bin'" \
+              "export PATH=\"$CLAUDE_HOME/bin:\$PATH\""
+
+  _check "perl available (required)" \
+         "command -v perl >/dev/null" \
+         "install perl (preinstalled on macOS/Linux usually)"
+
+  _warn_check "python3 available (recommended)" \
+              "command -v python3 >/dev/null" \
+              "install python3 — needed for --from-config and JSON validation"
+
+  _warn_check "git available (for upgrade)" \
+              "command -v git >/dev/null" \
+              "install git"
+
+  printf '\n'
+  if [ "$ok" -eq 1 ]; then
+    printf '\033[32mclaude-init is healthy.\033[0m\n'
+    return 0
+  else
+    printf '\033[31mclaude-init has issues.\033[0m See fix hints above.\n'
+    return 1
+  fi
+}
+
+# ─── arg parsing ────────────────────────────────────────────────────────────
+
+# Pull out global flags first so they can appear anywhere BEFORE the subcommand.
+# (Flags after the subcommand are forwarded to it untouched.)
+ARGS=()
+SAW_COMMAND=0
+while [ $# -gt 0 ]; do
+  if [ "$SAW_COMMAND" -eq 0 ]; then
+    case "$1" in
+      -v|--verbose) VERBOSE=1; shift; continue ;;
+      -q|--quiet)   QUIET=1; shift; continue ;;
+      -V|--version) cmd_version; exit 0 ;;
+      -h|--help)    cmd_help; exit 0 ;;
+      --)           shift; while [ $# -gt 0 ]; do ARGS+=("$1"); shift; done; break ;;
+      -*)           _die "unknown global flag: $1" ;;
+      *)            SAW_COMMAND=1; ARGS+=("$1"); shift; continue ;;
+    esac
+  else
+    ARGS+=("$1"); shift
+  fi
+done
+
+set -- "${ARGS[@]:-}"
+
+COMMAND="${1:-}"
+[ $# -gt 0 ] && shift || true
+
+case "$COMMAND" in
+  ""|help)    cmd_help "$@" ;;
+  version)    cmd_version ;;
+  template)   cmd_template "$@" ;;
+  init)       cmd_init "$@" ;;
+  upgrade)    cmd_upgrade "$@" ;;
+  doctor)     cmd_doctor "$@" ;;
+  *)          _die "unknown command: $COMMAND (run 'claude-init help')" ;;
+esac

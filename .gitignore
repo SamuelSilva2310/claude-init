@@ -1,0 +1,72 @@
+# ── OS ──────────────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ── Editors ─────────────────────────────────────────────────────────────────
+*.swp
+*.swo
+*~
+.idea/
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json.example
+
+# ── Backups / temp ──────────────────────────────────────────────────────────
+*.bak
+*.bak.*
+*.orig
+*.rej
+*.tmp
+.tmp/
+.cache/
+tmp/
+
+# ── Env / local secrets ─────────────────────────────────────────────────────
+.env
+.env.*
+!.env.example
+*.local
+*.local.*
+
+# ── Node (from examples / dev) ──────────────────────────────────────────────
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+.pnpm-store/
+
+# ── Python (from examples / dev) ────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+.python-version
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# ── Go (from examples / dev) ────────────────────────────────────────────────
+# NOTE: do NOT ignore bin/ — repo ships bin/claude-init
+vendor/
+*.test
+*.out
+coverage.txt
+
+# ── Claude Code generated state ─────────────────────────────────────────────
+# Generated scaffolds when testing /claude-init or claude-init init in this repo
+.claude/
+.claude-template/
+claude-init.config.json
+
+# ── CI / build outputs ──────────────────────────────────────────────────────
+dist/
+build/
+coverage/
+
+# ── Scratch / experimental ──────────────────────────────────────────────────
+scratch/
+sandbox/
+TODO.local.md
+NOTES.local.md
