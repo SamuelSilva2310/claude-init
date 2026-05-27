@@ -661,8 +661,21 @@ cmd_init() {
     return 0
   fi
 
-  cp -R "$template_dir" "./.claude"
+  # -L dereferences symlinks at the source. Without it, when $template_dir is
+  # itself a symlink (e.g. under dev-install where ~/.claude/templates/claude-init/default
+  # is a symlink into the repo checkout), BSD/POSIX cp -R reproduces the symlink
+  # instead of copying the contents — ./.claude ends up as a symlink, and every
+  # subsequent step (substitute, validate) silently no-ops on macOS.
+  cp -RL "$template_dir" "./.claude"
   _log "copy" "$template_dir -> ./.claude"
+
+  # Sanity: catch a regression of the cp-symlink bug above. Fail loud, not silent.
+  if [ -L "./.claude" ]; then
+    _die "internal error: ./.claude is a symlink after copy (cp -RL did not dereference)"
+  fi
+  if [ ! -d "./.claude" ]; then
+    _die "internal error: ./.claude is not a directory after copy"
+  fi
 
   _substitute_all "./.claude"
   _log "substitute" "placeholders applied"

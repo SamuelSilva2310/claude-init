@@ -85,4 +85,65 @@ ls "$TMP_HOME/templates/claude-init/" | grep -q 'default.bak.' \
   && pass "previous template backed up" \
   || fail "expected default.bak.* after re-run"
 
+# ── Regression: dev-install symlink + init ───────────────────────────────────
+# Reproduces the bug where cp -R (BSD) reproduces a source symlink instead of
+# copying contents, leaving ./.claude as a symlink and all subsequent steps as
+# silent no-ops. The install.sh path uses a real copy, so this dev-install
+# scenario must be exercised separately.
+#
+# Setup: a second CLAUDE_HOME where the shipped template is a symlink (mimicking
+# what scripts/dev-install.sh produces).
+DEV_HOME="$(mktemp -d -t claude-init-dev.XXXXXX)"
+mkdir -p "$DEV_HOME/bin" "$DEV_HOME/templates/claude-init" "$DEV_HOME/templates/user"
+cp "$REPO_ROOT/bin/claude-init" "$DEV_HOME/bin/claude-init"
+chmod +x "$DEV_HOME/bin/claude-init"
+ln -s "$REPO_ROOT/templates/default" "$DEV_HOME/templates/claude-init/default"
+
+PROJECT="$(mktemp -d -t claude-init-proj.XXXXXX)"
+CFG="$(mktemp -t claude-init-cfg.XXXXXX)"
+cat > "$CFG" <<'JSON'
+{
+  "template": "default",
+  "required": {
+    "project_name": "t", "description": "t", "language": "t",
+    "framework": "t", "testing": "t",
+    "install_cmd": "t", "dev_cmd": "t", "build_cmd": "t",
+    "test_cmd": "t", "lint_cmd": "t"
+  },
+  "optional": {}
+}
+JSON
+
+(
+  cd "$PROJECT"
+  CLAUDE_HOME="$DEV_HOME" "$DEV_HOME/bin/claude-init" init \
+    --from-config "$CFG" --force >/dev/null 2>&1
+)
+
+[ ! -L "$PROJECT/.claude" ] \
+  && pass "./.claude is NOT a symlink under dev-install (cp -RL fix)" \
+  || fail "./.claude is a symlink — cp -R bug regressed"
+
+[ -d "$PROJECT/.claude" ] \
+  && pass "./.claude is a real directory under dev-install" \
+  || fail "./.claude is not a directory"
+
+[ -f "$PROJECT/.claude/CLAUDE.md" ] \
+  && pass "./.claude/CLAUDE.md exists" \
+  || fail "./.claude/CLAUDE.md missing"
+
+grep -q '{{' "$PROJECT/.claude/CLAUDE.md" \
+  && fail "placeholders left unsubstituted in ./.claude/CLAUDE.md" \
+  || pass "placeholders substituted (no {{...}} remaining)"
+
+# Edits to ./.claude/CLAUDE.md must not propagate to the source template.
+ORIG_TPL_HASH="$(shasum "$REPO_ROOT/templates/default/CLAUDE.md" | awk '{print $1}')"
+printf '\nSCRATCH\n' >> "$PROJECT/.claude/CLAUDE.md"
+NEW_TPL_HASH="$(shasum "$REPO_ROOT/templates/default/CLAUDE.md" | awk '{print $1}')"
+[ "$ORIG_TPL_HASH" = "$NEW_TPL_HASH" ] \
+  && pass "source template untouched by project edits" \
+  || fail "source template mutated! shipped templates/default/CLAUDE.md was modified"
+
+rm -rf "$DEV_HOME" "$PROJECT" "$CFG"
+
 echo "==> all checks passed"
