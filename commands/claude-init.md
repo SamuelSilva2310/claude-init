@@ -8,16 +8,30 @@ If the CLI binary is missing, fall back to the legacy declarative flow (see §Fa
 
 ---
 
-## Step 1 — Verify CLI is installed
+## Step 1 — Locate the CLI
 
-Run:
+The CLI may be on `PATH`, or just sitting at its install location. Try these in order and use the **first** one that prints a version. Remember the resolved command for the rest of the flow; refer to it below as `$CLI`.
 
 ```bash
-claude-init --version
+# 1. on PATH
+command -v claude-init && claude-init --version
+
+# 2. CLAUDE_HOME override
+[ -n "$CLAUDE_HOME" ] && "$CLAUDE_HOME/bin/claude-init" --version
+
+# 3. default install path
+"$HOME/.claude/bin/claude-init" --version
 ```
 
-- If it prints a version, continue from Step 2.
-- If the command is not found, jump to **Fallback (no CLI)** at the bottom.
+- If any succeed → continue from Step 2 using that command as `$CLI`.
+- If all fail → jump to **Fallback (no CLI)** at the bottom.
+
+If `claude-init` was not on `PATH` but option 2 or 3 worked, mention to the user at the end (Step 8):
+
+> Add `~/.claude/bin` to your `PATH` for direct CLI use outside Claude Code:
+> ```bash
+> echo 'export PATH="$HOME/.claude/bin:$PATH"' >> ~/.zshrc  # or ~/.bashrc
+> ```
 
 ---
 
@@ -100,8 +114,10 @@ Optional values may be `null` or `""` — the CLI will strip their template bloc
 
 ## Step 6 — Run the CLI
 
+Use `$CLI` from Step 1 (the resolved path).
+
 ```bash
-claude-init init --from-config /tmp/claude-init.config.json --force
+"$CLI" init --from-config /tmp/claude-init.config.json --force
 ```
 
 The CLI handles:

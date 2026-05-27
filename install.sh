@@ -1,12 +1,24 @@
 #!/usr/bin/env bash
 # claude-init installer
 # Idempotent — safe to re-run.
+#
+# Usage:
+#   curl -fsSL https://raw.githubusercontent.com/SamuelSilva2310/claude-init/main/install.sh | bash
+#
+# Flags (set via environment variables when piping to bash):
+#   CLAUDE_INIT_ADD_TO_PATH=1   Auto-append PATH export to detected shell rc (with backup).
+#                                Default: print instructions only.
+#   CLAUDE_INIT_REPO=<url>      Override repo URL.
+#   CLAUDE_INIT_BRANCH=<name>   Override branch (default: main).
+#   CLAUDE_HOME=<path>          Override install root (default: ~/.claude).
 
 set -euo pipefail
 
 REPO_URL="${CLAUDE_INIT_REPO:-https://github.com/SamuelSilva2310/claude-init.git}"
 BRANCH="${CLAUDE_INIT_BRANCH:-main}"
 CLAUDE_HOME="${CLAUDE_HOME:-$HOME/.claude}"
+ADD_TO_PATH="${CLAUDE_INIT_ADD_TO_PATH:-0}"
+
 BIN_DIR="$CLAUDE_HOME/bin"
 COMMANDS_DIR="$CLAUDE_HOME/commands"
 TEMPLATES_DIR="$CLAUDE_HOME/templates"
@@ -65,12 +77,27 @@ if [ -d "$LEGACY" ]; then
   warn "it is no longer used. Move customizations to $USER_TEMPLATES_DIR/<name>/ and delete the legacy dir."
 fi
 
+# PATH setup — source the shared helper from the cloned repo.
+# shellcheck source=scripts/lib/path-setup.sh
+. "$TMP_DIR/repo/scripts/lib/path-setup.sh"
+
 cat <<EOF
 
 claude-init installed.
 
-CLI:    $BIN_DIR/claude-init  (add $BIN_DIR to PATH if not already)
+CLI:    $BIN_DIR/claude-init
 Slash:  /claude-init  (inside Claude Code)
+Tpl:    $TEMPLATE_DEST
+EOF
+
+PATH_SETUP_AUTO_ADD="$ADD_TO_PATH" path_setup_run
+
+if [ "$ADD_TO_PATH" != "1" ] && ! path_setup_bin_on_path; then
+  printf '\n      Or re-run the installer with auto-append:\n'
+  printf '        \033[36mcurl -fsSL https://raw.githubusercontent.com/SamuelSilva2310/claude-init/main/install.sh | CLAUDE_INIT_ADD_TO_PATH=1 bash\033[0m\n'
+fi
+
+cat <<EOF
 
 Next:
   cd <your project>

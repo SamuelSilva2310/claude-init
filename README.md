@@ -25,11 +25,13 @@ One-liner (until v0.1.0 ships, this pulls `main`):
 curl -fsSL https://raw.githubusercontent.com/SamuelSilva2310/claude-init/main/install.sh | bash
 ```
 
-Add the CLI to your `PATH`:
+The installer detects your shell (zsh / bash / fish) and prints the exact line to add `~/.claude/bin` to your `PATH`. To have it auto-append to your shell rc files (with backup):
 
 ```bash
-export PATH="$HOME/.claude/bin:$PATH"
+curl -fsSL https://raw.githubusercontent.com/SamuelSilva2310/claude-init/main/install.sh | CLAUDE_INIT_ADD_TO_PATH=1 bash
 ```
+
+zsh users get the line added to **both** `~/.zshrc` (for your terminal) and `~/.zshenv` (so Claude Code's non-interactive Bash also sees the CLI).
 
 Verify:
 
@@ -38,6 +40,8 @@ claude-init --version
 claude-init template list
 ls ~/.claude/commands/claude-init.md ~/.claude/templates/claude-init/default/CLAUDE.md
 ```
+
+If `claude-init` is not on `PATH`, the `/claude-init` slash command still works — it falls back to `~/.claude/bin/claude-init` automatically.
 
 ### Local development
 

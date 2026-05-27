@@ -2,7 +2,10 @@
 # claude-init dev installer — symlinks from the current checkout into ~/.claude/.
 # Edit the repo, see changes live. Run dev-uninstall.sh to undo.
 #
-# Override target with CLAUDE_HOME=/path/to/home ./scripts/dev-install.sh
+# Flags (environment variables):
+#   CLAUDE_HOME=<path>          Override install root (default: ~/.claude).
+#   CLAUDE_INIT_ADD_TO_PATH=1   Auto-append PATH export to detected shell rc.
+#                                Default: print instructions only.
 
 set -euo pipefail
 
@@ -36,7 +39,7 @@ link() {
   log "link" "$dst -> $src"
 }
 
-link "$REPO_ROOT/bin/claude-init"        "$BIN_DIR/claude-init"
+link "$REPO_ROOT/bin/claude-init"         "$BIN_DIR/claude-init"
 link "$REPO_ROOT/commands/claude-init.md" "$COMMANDS_DIR/claude-init.md"
 link "$REPO_ROOT/templates/default"       "$SHIPPED_DIR/default"
 
@@ -52,9 +55,19 @@ dev-install complete.
 CLI:    $BIN_DIR/claude-init
 Slash:  $COMMANDS_DIR/claude-init.md
 Tpl:    $SHIPPED_DIR/default -> $REPO_ROOT/templates/default
+EOF
 
-Add to PATH if not already:
-  export PATH="$BIN_DIR:\$PATH"
+# PATH setup — source the shared helper.
+# shellcheck source=lib/path-setup.sh
+. "$REPO_ROOT/scripts/lib/path-setup.sh"
+PATH_SETUP_AUTO_ADD="${CLAUDE_INIT_ADD_TO_PATH:-0}" path_setup_run
+
+if [ "${CLAUDE_INIT_ADD_TO_PATH:-0}" != "1" ] && ! path_setup_bin_on_path; then
+  printf '\n      Or re-run dev-install with auto-append:\n'
+  printf '        \033[36mCLAUDE_INIT_ADD_TO_PATH=1 ./scripts/dev-install.sh\033[0m\n'
+fi
+
+cat <<EOF
 
 Verify:
   claude-init --version
