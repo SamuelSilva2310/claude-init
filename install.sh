@@ -15,7 +15,7 @@
 set -euo pipefail
 
 REPO_URL="${CLAUDE_INIT_REPO:-https://github.com/SamuelSilva2310/claude-init.git}"
-BRANCH="${CLAUDE_INIT_BRANCH:-main}"
+BRANCH="${CLAUDE_INIT_BRANCH:-v0.1.0}"
 CLAUDE_HOME="${CLAUDE_HOME:-$HOME/.claude}"
 ADD_TO_PATH="${CLAUDE_INIT_ADD_TO_PATH:-0}"
 
